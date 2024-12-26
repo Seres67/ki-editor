@@ -7,10 +7,18 @@ pub const LANGUAGES: &[&Language] = &[
     &common_lisp(),
     &css(),
     &csv(),
+    &diff(),
     &dockerfile(),
+    &elixir(),
+    &gitattributes(),
+    &gitcommit(),
+    &gitconfig(),
+    &gitignore(),
+    &gitrebase(),
     &gleam(),
     &graphql(),
     &hare(),
+    &heex(),
     &html(),
     &javascript(true),
     &javascript(false),
@@ -128,6 +136,19 @@ const fn csv() -> Language {
     }
 }
 
+const fn diff() -> Language {
+    Language {
+        extensions: &["diff"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "diff",
+            url: "https://github.com/the-mikedavis/tree-sitter-diff",
+            commit: "main",
+            subpath: None,
+        }),
+        ..Language::new()
+    }
+}
+
 const fn css() -> Language {
     Language {
         file_names: &[],
@@ -159,6 +180,25 @@ const fn dockerfile() -> Language {
             commit: "main",
             subpath: None,
         }),
+    }
+}
+
+const fn elixir() -> Language {
+    Language {
+        lsp_language_id: Some(LanguageId::new("elixir")),
+        extensions: &["ex", "exs"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "elixir",
+            url: "https://github.com/elixir-lang/tree-sitter-elixir",
+            commit: "main",
+            subpath: None,
+        }),
+        lsp_command: Some(LspCommand {
+            command: Command("elixir-ls", &[]),
+            initialization_options: None,
+        }),
+        formatter_command: Some(Command("mix", &["format", "-"])),
+        ..Language::new()
     }
 }
 
@@ -200,6 +240,71 @@ const fn graphql() -> Language {
     }
 }
 
+const fn gitattributes() -> Language {
+    Language {
+        file_names: &[".gitattributes"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "gitattributes",
+            url: "https://github.com/tree-sitter-grammars/tree-sitter-gitattributes",
+            commit: "master",
+            subpath: None,
+        }),
+        ..Language::new()
+    }
+}
+
+const fn gitcommit() -> Language {
+    Language {
+        file_names: &["COMMIT_EDITMSG"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "gitcommit",
+            url: "https://github.com/gbprod/tree-sitter-gitcommit",
+            commit: "main",
+            subpath: None,
+        }),
+        ..Language::new()
+    }
+}
+
+const fn gitconfig() -> Language {
+    Language {
+        file_names: &[".gitconfig"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "git_config",
+            url: "https://github.com/the-mikedavis/tree-sitter-git-config",
+            commit: "main",
+            subpath: None,
+        }),
+        ..Language::new()
+    }
+}
+
+const fn gitignore() -> Language {
+    Language {
+        file_names: &[".gitignore"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "gitignore",
+            url: "https://github.com/shunsambongi/tree-sitter-gitignore",
+            commit: "main",
+            subpath: None,
+        }),
+        ..Language::new()
+    }
+}
+
+const fn gitrebase() -> Language {
+    Language {
+        file_names: &["git-rebase-todo"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "git_rebase",
+            url: "https://github.com/the-mikedavis/tree-sitter-git-rebase",
+            commit: "main",
+            subpath: None,
+        }),
+        ..Language::new()
+    }
+}
+
 const fn hare() -> Language {
     Language {
         extensions: &["ha"],
@@ -209,6 +314,28 @@ const fn hare() -> Language {
             commit: "master",
             subpath: None,
         }),
+        ..Language::new()
+    }
+}
+
+const fn heex() -> Language {
+    Language {
+        lsp_language_id: Some(LanguageId::new("heex")),
+        extensions: &["heex"],
+        tree_sitter_grammar_config: Some(GrammarConfig {
+            id: "heex",
+            url: "https://github.com/phoenixframework/tree-sitter-heex",
+            commit: "main",
+            subpath: None,
+        }),
+        lsp_command: Some(LspCommand {
+            command: Command("elixir-ls", &[]),
+            initialization_options: None,
+        }),
+        formatter_command: Some(Command(
+            "mix",
+            &["format", "--stdin-filename", "file.heex", "-"],
+        )),
         ..Language::new()
     }
 }
