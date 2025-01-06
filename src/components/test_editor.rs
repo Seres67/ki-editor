@@ -1182,7 +1182,7 @@ fn scroll_offset() -> anyhow::Result<()> {
                 height: 3,
             })),
             Editor(SetScrollOffset(2)),
-            Expect(EditorGrid("🦀  src/main.rs\n3│█amma\n4│lok")),
+            Expect(EditorGrid("🦀  src/main.rs [*]\n3│█amma\n4│lok")),
         ])
     })
 }
@@ -1250,7 +1250,7 @@ fn main() {
             // The "long" of "too long" is not shown, because it exceeded the view width
             Expect(EditorGrid(
                 "
-🦀  src/main.rs
+🦀  src/main.rs [*]
 1│fn main() {
 3│  █eta()
 4│}
@@ -1397,7 +1397,7 @@ fn main() {
             // because it is amongst the parent lines of the current selection
             Expect(EditorGrid(
                 "
-🦀  src/main.rs
+🦀  src/main.rs [*]
 2│fn main() {
 4│  let y = 2; //
 ↪│too long, wrapped
@@ -1449,7 +1449,7 @@ fn main() {
             Editor(SetScrollOffset(3)),
             Expect(EditorGrid(
                 "
-🦀  src/main.rs
+🦀  src/main.rs [*]
 2│fn main() {
 4│  let y = 2; //
 ↪│too long, wrapped
@@ -1683,7 +1683,7 @@ fn main() { // too long
             // The "long" of "too long" is not shown, because it exceeded the view width
             Expect(EditorGrid(
                 "
-🦀  src/main.rs
+🦀  src/main.rs [*]
 1│fn main() { // too
 3│  let █ar = baba;
 ↪│let wrapped = coco
@@ -1743,7 +1743,7 @@ fn main() { // too long
             Editor(MatchLiteral("let".to_string())),
             Expect(EditorGrid(
                 "
-🦀  src/main.rs
+🦀  src/main.rs [*]
 1│fn main() { // too
 ↪│ long
 2│  █et foo = 1;
@@ -1773,7 +1773,7 @@ fn empty_content_should_have_one_line() -> anyhow::Result<()> {
             })),
             Expect(EditorGrid(
                 "
-🦀  src/main.rs
+🦀  src/main.rs [*]
 1│█
 "
                 .trim(),
@@ -1828,7 +1828,7 @@ fn saving_should_not_destroy_mark_if_selections_not_modified() -> anyhow::Result
             Editor(MatchLiteral("bar".to_string())),
             Editor(ToggleMark),
             Editor(SetSelectionMode(IfCurrentNotFound::LookForward, Mark)),
-            Editor(Save),
+            Editor(ForceSave),
             // Expect the content is formatted (second line dedented)
             Expect(CurrentComponentContent("// foo bar spim\nfn foo() {}\n")),
             Editor(SetSelectionMode(IfCurrentNotFound::LookForward, Character)),
@@ -1886,7 +1886,7 @@ fn consider_unicode_width() -> anyhow::Result<()> {
             // Expect the cursor is on the letter 'a'
             // Expect an extra space is added between 'a' and the emoji
             // because, the unicode width of the emoji is 2
-            Expect(EditorGrid("🦀  src/main.rs\n1│👩  █bc\n\n\n\n\n\n\n")),
+            Expect(EditorGrid("🦀  src/main.rs [*]\n1│👩  █bc\n\n\n\n\n\n\n")),
         ])
     })
 }
@@ -1910,7 +1910,7 @@ fn delete_backward() -> anyhow::Result<()> {
 #[test]
 fn tree_sitter_should_not_reparse_in_insert_mode() -> anyhow::Result<()> {
     let mut editor = crate::components::editor::Editor::from_text(
-        Some(tree_sitter_md::language()),
+        Some(tree_sitter_md::LANGUAGE.into()),
         "fn main() {}",
     );
     let _ = editor.enter_insert_mode(Direction::End)?;
@@ -1980,6 +1980,38 @@ fn entering_insert_mode_from_visual_mode() -> anyhow::Result<()> {
 }
 
 #[test]
+fn modifying_editor_causes_dirty_state() -> anyhow::Result<()> {
+    execute_test(|s| {
+        Box::new([
+            App(OpenFile(s.main_rs())),
+            Expect(Not(Box::new(EditorIsDirty()))),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs")),
+            Editor(EnterInsertMode(Direction::Start)),
+            App(HandleKeyEvents(keys!("a a esc").to_vec())),
+            Expect(EditorIsDirty()),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs [*]")),
+        ])
+    })
+}
+
+#[test]
+fn saving_editor_clears_dirty_state() -> anyhow::Result<()> {
+    execute_test(|s| {
+        Box::new([
+            App(OpenFile(s.main_rs())),
+            Expect(Not(Box::new(EditorIsDirty()))),
+            Editor(EnterInsertMode(Direction::Start)),
+            App(HandleKeyEvents(keys!("a a esc").to_vec())),
+            Expect(EditorIsDirty()),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs [*]")),
+            Editor(Save),
+            Expect(Not(Box::new(EditorIsDirty()))),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs")),
+        ])
+    })
+}
+
+#[test]
 fn after_save_select_current() -> anyhow::Result<()> {
     fn test(
         selection_mode: SelectionMode,
@@ -2003,7 +2035,7 @@ fn main() {
                     IfCurrentNotFound::LookForward,
                     selection_mode.clone(),
                 )),
-                Editor(Save),
+                Editor(ForceSave),
                 Expect(CurrentComponentContent(
                     "
 fn main() {
@@ -3214,6 +3246,38 @@ fn visual_select_anchor_change_selection_mode() -> anyhow::Result<()> {
             Expect(CurrentSelectedTexts(&["helloWorld fooBar"])),
             Editor(SetSelectionMode(IfCurrentNotFound::LookForward, Word)),
             Expect(CurrentSelectedTexts(&["helloWorld foo"])),
+        ])
+    })
+}
+
+#[test]
+fn toggle_editor_tag() -> anyhow::Result<()> {
+    execute_test(|s| {
+        Box::new([
+            App(OpenFile(s.main_rs())),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs")),
+            App(HandleKeyEvent(key!("1"))),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs #1")),
+            App(HandleKeyEvent(key!("1"))),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs")),
+        ])
+    })
+}
+
+#[test]
+fn jump_editor_tag() -> anyhow::Result<()> {
+    execute_test(|s| {
+        Box::new([
+            App(OpenFile(s.main_rs())),
+            App(HandleKeyEvent(key!("1"))),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs #1")),
+            App(OpenFile(s.foo_rs())),
+            App(HandleKeyEvent(key!("2"))),
+            Expect(CurrentComponentTitle(" 🦀 src/foo.rs #2")),
+            App(HandleKeyEvent(key!("1"))),
+            Expect(CurrentComponentTitle(" 🦀 src/main.rs #1")),
+            App(HandleKeyEvent(key!("2"))),
+            Expect(CurrentComponentTitle(" 🦀 src/foo.rs #2")),
         ])
     })
 }

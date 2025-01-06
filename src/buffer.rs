@@ -23,7 +23,7 @@ use shared::{
 };
 use std::{collections::HashSet, ops::Range};
 use tree_sitter::{Node, Parser, Tree};
-use tree_sitter_traversal::{traverse, Order};
+use tree_sitter_traversal2::{traverse, Order};
 
 #[derive(Clone)]
 pub(crate) struct Buffer {
@@ -39,6 +39,7 @@ pub(crate) struct Buffer {
     quickfix_list_items: Vec<QuickfixListItem>,
     decorations: Vec<Decoration>,
     selection_set_history: History<SelectionSet>,
+    dirty: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -72,25 +73,30 @@ impl Buffer {
             diagnostics: Vec::new(),
             quickfix_list_items: Vec::new(),
             selection_set_history: History::new(),
+            dirty: false,
         }
     }
+
     pub(crate) fn clear_quickfix_list_items(&mut self) {
         self.quickfix_list_items.clear()
     }
+
     pub(crate) fn update_quickfix_list_items(
         &mut self,
         quickfix_list_items: Vec<QuickfixListItem>,
     ) {
         self.quickfix_list_items = quickfix_list_items
     }
+
     pub(crate) fn reload(&mut self) -> anyhow::Result<()> {
         if let Some(path) = self.path() {
             let updated_content = path.read()?;
-
             self.update_content(&updated_content, SelectionSet::default())?;
+            self.dirty = false;
         }
         Ok(())
     }
+
     pub(crate) fn content(&self) -> String {
         self.rope.to_string()
     }
@@ -98,6 +104,7 @@ impl Buffer {
     pub(crate) fn decorations(&self) -> &Vec<Decoration> {
         &self.decorations
     }
+
     pub(crate) fn set_decorations(&mut self, decorations: &[Decoration]) {
         decorations.clone_into(&mut self.decorations)
     }
@@ -258,6 +265,7 @@ impl Buffer {
 
     pub(crate) fn update(&mut self, text: &str) {
         (self.rope, self.tree) = Self::get_rope_and_tree(self.treesitter_language.clone(), text);
+        self.dirty = true;
     }
 
     pub(crate) fn get_line_by_char_index(&self, char_index: CharIndex) -> anyhow::Result<Rope> {
@@ -485,6 +493,7 @@ impl Buffer {
         self.rope.try_remove(edit.range.start.0..edit.end().0)?;
         self.rope
             .try_insert(edit.range.start.0, edit.new.to_string().as_str())?;
+        self.dirty = true;
 
         // Update all the positional spans (by using the char index ranges computed before the content is updated
         self.quickfix_list_items = quickfix_list_items_with_char_index_range
@@ -594,7 +603,7 @@ impl Buffer {
     ) -> anyhow::Result<Buffer> {
         let content = path.read()?;
         let language = if enable_tree_sitter {
-            language::from_path(path)
+            language::from_path(path).or_else(|| language::from_content_directive(&content))
         } else {
             None
         };
@@ -640,10 +649,17 @@ impl Buffer {
         None
     }
 
-    pub(crate) fn save_without_formatting(&mut self) -> anyhow::Result<Option<CanonicalizedPath>> {
-        if let Some(path) = &self.path.clone() {
-            path.write(&self.content())?;
+    pub(crate) fn save_without_formatting(
+        &mut self,
+        force: bool,
+    ) -> anyhow::Result<Option<CanonicalizedPath>> {
+        if !force && !self.dirty {
+            return Ok(None);
+        }
 
+        if let Some(path) = &self.path {
+            path.write(&self.content())?;
+            self.dirty = false;
             Ok(Some(path.clone()))
         } else {
             log::info!("Buffer has no path");
@@ -654,12 +670,15 @@ impl Buffer {
     pub(crate) fn save(
         &mut self,
         current_selection_set: SelectionSet,
+        force: bool,
     ) -> anyhow::Result<Option<CanonicalizedPath>> {
-        if let Some(formatted_content) = self.get_formatted_content() {
-            self.update_content(&formatted_content, current_selection_set)?;
+        if force || self.dirty {
+            if let Some(formatted_content) = self.get_formatted_content() {
+                self.update_content(&formatted_content, current_selection_set)?;
+            }
         }
 
-        self.save_without_formatting()
+        self.save_without_formatting(force)
     }
 
     fn update_content(
@@ -728,6 +747,11 @@ impl Buffer {
         self.marks.clone()
     }
 
+    /// Has the buffer changed since its last save?
+    pub(crate) fn dirty(&self) -> bool {
+        self.dirty
+    }
+
     pub(crate) fn byte_to_position(&self, byte_index: usize) -> anyhow::Result<Position> {
         let char_index = self.byte_to_char(byte_index)?;
         self.char_to_position(char_index)
@@ -754,12 +778,14 @@ impl Buffer {
     ) -> anyhow::Result<CharIndexRange> {
         Ok((self.byte_to_char(range.start)?..self.byte_to_char(range.end)?).into())
     }
+
     pub(crate) fn position_range_to_char_index_range(
         &self,
         range: &Range<Position>,
     ) -> anyhow::Result<CharIndexRange> {
         Ok((self.position_to_char(range.start)?..self.position_to_char(range.end)?).into())
     }
+
     pub(crate) fn char_index_range_to_position_range(
         &self,
         range: CharIndexRange,
@@ -1062,6 +1088,7 @@ fn f(
             assert_eq!(buffer.content(), expected);
             Ok(())
         }
+
         #[test]
         fn literal_1() -> anyhow::Result<()> {
             test(
@@ -1139,7 +1166,7 @@ fn f(
                 buffer.update(" fn main\n() {}");
 
                 // Save the buffer
-                buffer.save(SelectionSet::default()).unwrap();
+                buffer.save(SelectionSet::default(), false).unwrap();
 
                 // Expect the output is formatted
                 let saved_content = path.read().unwrap();
@@ -1167,7 +1194,7 @@ fn f(
                 let original = " fn main\n() {}";
                 buffer.update(original);
 
-                buffer.save(SelectionSet::default()).unwrap();
+                buffer.save(SelectionSet::default(), false).unwrap();
 
                 // Expect the buffer is formatted
                 assert_ne!(buffer.rope.to_string(), original);
@@ -1191,7 +1218,7 @@ fn f(
                 buffer.update("fn main() {");
 
                 // Save the buffer
-                buffer.save(SelectionSet::default()).unwrap();
+                buffer.save(SelectionSet::default(), false).unwrap();
 
                 // Expect the buffer remain unchanged,
                 // because the syntax node is invalid
@@ -1214,7 +1241,7 @@ fn f(
                 // but not to the formatter
                 assert!(!buffer.tree.as_ref().unwrap().root_node().has_error());
 
-                buffer.save(SelectionSet::default()).unwrap();
+                buffer.save(SelectionSet::default(), false).unwrap();
 
                 // Expect the buffer remain unchanged
                 assert_eq!(buffer.rope.to_string(), code);
@@ -1227,7 +1254,7 @@ fn f(
 
         use super::*;
         fn run_test(old: &str, new: &str) -> anyhow::Result<EditTransaction> {
-            let mut buffer = Buffer::new(Some(tree_sitter_md::language()), old);
+            let mut buffer = Buffer::new(Some(tree_sitter_md::LANGUAGE.into()), old);
 
             let edit_transaction = buffer.get_edit_transaction(new)?;
 
@@ -1239,6 +1266,7 @@ fn f(
 
             Ok(edit_transaction)
         }
+
         #[test]
         fn empty_line_removal() -> anyhow::Result<()> {
             let old = r#"
@@ -1376,6 +1404,7 @@ impl Applicable for Patch {
         Ok(self.state.clone())
     }
 }
+
 impl PartialEq for Patch {
     fn eq(&self, _other: &Self) -> bool {
         // Always return false, assuming that no two patches can be identical

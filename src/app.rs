@@ -4,7 +4,7 @@ use crate::{
     components::{
         component::{Component, ComponentId, GetGridResult},
         dropdown::{DropdownItem, DropdownRender},
-        editor::{DispatchEditor, Editor, IfCurrentNotFound, Movement},
+        editor::{Direction, DispatchEditor, Editor, IfCurrentNotFound, Movement},
         keymap_legend::{
             Keymap, KeymapLegendBody, KeymapLegendConfig, KeymapLegendSection, Keymaps,
         },
@@ -306,9 +306,12 @@ impl<T: Frontend> App<T> {
                 self.status_line_components
                     .iter()
                     .filter_map(|component| match component {
-                        StatusLineComponent::CurrentWorkingDirectory => {
-                            Some(self.working_directory.display_absolute())
-                        }
+                        StatusLineComponent::CurrentWorkingDirectory => Some(
+                            self.working_directory
+                                .display_relative_to_home()
+                                .ok()
+                                .unwrap_or_else(|| self.working_directory.display_absolute()),
+                        ),
                         StatusLineComponent::GitBranch => self.current_branch(),
                         StatusLineComponent::Mode => Some(
                             self.context
@@ -614,19 +617,19 @@ impl<T: Frontend> App<T> {
             Dispatch::ToEditor(dispatch_editor) => self.handle_dispatch_editor(dispatch_editor)?,
             Dispatch::GotoLocation(location) => self.go_to_location(&location)?,
             Dispatch::OpenMoveToIndexPrompt => self.open_move_to_index_prompt()?,
-            Dispatch::RunCommand(command) => self.run_command(command)?,
             Dispatch::QuitAll => self.quit_all()?,
-            Dispatch::OpenCommandPrompt => self.open_command_prompt()?,
             Dispatch::SaveQuitAll => self.save_quit_all()?,
             Dispatch::RevealInExplorer(path) => self.reveal_path_in_explorer(&path)?,
             Dispatch::OpenYesNoPrompt(prompt) => self.open_yes_no_prompt(prompt)?,
             Dispatch::OpenMoveFilePrompt(path) => self.open_move_file_prompt(path)?,
+            Dispatch::OpenCopyFilePrompt(path) => self.open_copy_file_prompt(path)?,
             Dispatch::OpenAddPathPrompt(path) => self.open_add_path_prompt(path)?,
             Dispatch::DeletePath(path) => self.delete_path(&path)?,
             Dispatch::Null => {
                 // do nothing
             }
             Dispatch::MoveFile { from, to } => self.move_file(from, to)?,
+            Dispatch::CopyFile { from, to } => self.copy_file(from, to)?,
             Dispatch::AddPath(path) => self.add_path(path)?,
             Dispatch::RefreshFileExplorer => {
                 self.layout.refresh_file_explorer(&self.working_directory)?
@@ -706,6 +709,10 @@ impl<T: Frontend> App<T> {
                 let context = std::mem::take(&mut self.context);
                 self.context = context.set_theme(theme.clone());
             }
+            Dispatch::SetThemeFromDescriptor(theme_descriptor) => {
+                let context = std::mem::take(&mut self.context);
+                self.context = context.set_theme(theme_descriptor.to_theme());
+            }
             #[cfg(test)]
             Dispatch::HandleKeyEvents(key_events) => self.handle_key_events(key_events)?,
             Dispatch::CloseDropdown => self.layout.close_dropdown(),
@@ -728,6 +735,8 @@ impl<T: Frontend> App<T> {
             Dispatch::OtherWindow => self.layout.cycle_window(),
             Dispatch::GoToPreviousFile => self.go_to_previous_file()?,
             Dispatch::GoToNextFile => self.go_to_next_file()?,
+            Dispatch::CycleBuffer(direction) => self.cycle_buffer(direction)?,
+            Dispatch::JumpEditor(tag) => self.handle_jump_editor(tag)?,
             Dispatch::PushPromptHistory { key, line } => self.push_history_prompt(key, line),
             Dispatch::OpenThemePrompt => self.open_theme_prompt()?,
             Dispatch::SetLastNonContiguousSelectionMode(selection_mode) => self
@@ -865,6 +874,21 @@ impl<T: Frontend> App<T> {
         )
     }
 
+    fn open_copy_file_prompt(&mut self, path: CanonicalizedPath) -> anyhow::Result<()> {
+        self.open_prompt(
+            PromptConfig {
+                title: "Copy current file to a new path".to_string(),
+                on_enter: DispatchPrompt::CopyFile { from: path.clone() },
+                items: Vec::new(),
+                enter_selects_first_matching_item: false,
+                leaves_current_line_empty: false,
+                fire_dispatches_on_change: None,
+            },
+            PromptHistoryKey::CopyFile,
+            Some(path.display_absolute()),
+        )
+    }
+
     fn open_symbol_picker(&mut self, symbols: Symbols) -> anyhow::Result<()> {
         self.open_prompt(
             PromptConfig {
@@ -881,24 +905,6 @@ impl<T: Frontend> App<T> {
                 fire_dispatches_on_change: None,
             },
             PromptHistoryKey::Symbol,
-            None,
-        )
-    }
-
-    fn open_command_prompt(&mut self) -> anyhow::Result<()> {
-        self.open_prompt(
-            PromptConfig {
-                title: "Command".to_string(),
-                on_enter: DispatchPrompt::RunCommand,
-                items: crate::command::COMMANDS
-                    .iter()
-                    .flat_map(|command| command.to_dropdown_items())
-                    .collect(),
-                enter_selects_first_matching_item: true,
-                leaves_current_line_empty: true,
-                fire_dispatches_on_change: None,
-            },
-            PromptHistoryKey::Command,
             None,
         )
     }
@@ -1193,7 +1199,7 @@ impl<T: Frontend> App<T> {
                 self.layout.clear_quickfix_list_items();
                 items
                     .into_iter()
-                    .group_by(|item| item.location().path.clone())
+                    .chunk_by(|item| item.location().path.clone())
                     .into_iter()
                     .map(|(path, items)| -> anyhow::Result<()> {
                         let editor = self.open_file(&path, OpenFileOption::Background)?;
@@ -1313,13 +1319,6 @@ impl<T: Frontend> App<T> {
         self.sender.clone()
     }
 
-    fn run_command(&mut self, command: String) -> anyhow::Result<()> {
-        let dispatch = crate::command::find(&command)
-            .map(|cmd| cmd.dispatch())
-            .ok_or_else(|| anyhow::anyhow!("Unknown command: {}", command))?;
-        self.handle_dispatch(dispatch)
-    }
-
     fn save_quit_all(&mut self) -> anyhow::Result<()> {
         self.save_all()?;
         self.quit_all()?;
@@ -1374,6 +1373,22 @@ impl<T: Frontend> App<T> {
         self.layout.remove_suggestive_editor(&from);
         Ok(())
     }
+
+    fn copy_file(&mut self, from: CanonicalizedPath, to: PathBuf) -> anyhow::Result<()> {
+        use std::fs;
+        self.add_path_parent(&to)?;
+        fs::copy(from.clone(), to.clone())?;
+        self.layout.refresh_file_explorer(&self.working_directory)?;
+        let to = to.try_into()?;
+        self.reveal_path_in_explorer(&to)?;
+        self.lsp_manager.send_message(
+            from.clone(),
+            FromEditor::WorkspaceDidCreateFiles { file_path: to },
+        )?;
+        self.layout.remove_suggestive_editor(&from);
+        Ok(())
+    }
+
     fn add_path_parent(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(new_dir) = path.parent() {
             std::fs::create_dir_all(new_dir)?;
@@ -1393,8 +1408,12 @@ impl<T: Frontend> App<T> {
             std::fs::File::create(&path)?;
         }
         self.layout.refresh_file_explorer(&self.working_directory)?;
-        self.reveal_path_in_explorer(&path.try_into()?)?;
-
+        let path: CanonicalizedPath = path.try_into()?;
+        self.reveal_path_in_explorer(&path)?;
+        self.lsp_manager.send_message(
+            path.clone(),
+            FromEditor::WorkspaceDidCreateFiles { file_path: path },
+        )?;
         Ok(())
     }
 
@@ -1843,6 +1862,49 @@ impl<T: Frontend> App<T> {
         Ok(())
     }
 
+    fn cycle_buffer(&mut self, direction: Direction) -> anyhow::Result<()> {
+        if let Some(current_file_path) = self.current_component().borrow().path() {
+            let files = self.layout.get_opened_files();
+            if let Some(current_index) = files.iter().position(|p| p == &current_file_path) {
+                let next_index = match direction {
+                    Direction::Start if current_index == 0 => files.len() - 1,
+                    Direction::Start => current_index - 1,
+                    Direction::End if current_index == files.len() - 1 => 0,
+                    Direction::End => current_index + 1,
+                };
+
+                self.open_file(&files[next_index], OpenFileOption::Focus)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_jump_editor(&mut self, tag: char) -> anyhow::Result<()> {
+        let new_tag = match self.layout.find_editor_tagged(tag) {
+            // Case 1: Found a non-current editor that has this tag
+            //    - Jump to it
+            Some(tagged_editor)
+                if Some(tagged_editor.clone()) != self.current_component().borrow().path() =>
+            {
+                self.open_file(&tagged_editor, OpenFileOption::Focus)?;
+
+                return Ok(());
+            }
+            // Case 2: Found current editor to have this tag
+            //    - Remove current editor's tag
+            Some(_) => None,
+            // Case 3: No editor found
+            //    - Add new tag to current editor
+            None => Some(tag),
+        };
+
+        self.current_component()
+            .borrow_mut()
+            .editor_mut()
+            .set_tag(new_tag);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn get_current_component_content(&self) -> String {
         self.current_component().borrow().editor().content()
@@ -2040,11 +2102,15 @@ impl<T: Frontend> App<T> {
         self.open_prompt(
             PromptConfig {
                 on_enter: DispatchPrompt::Null,
-                items: crate::themes::themes()?
+                items: crate::themes::theme_descriptor::all()
                     .into_iter()
-                    .map(|theme| {
-                        DropdownItem::new(theme.name.to_string())
-                            .set_dispatches(Dispatches::one(Dispatch::SetTheme(theme.clone())))
+                    .enumerate()
+                    .map(|(index, theme_descriptor)| {
+                        DropdownItem::new(theme_descriptor.name().to_string())
+                            .set_rank(Some(Box::from([index].to_vec())))
+                            .set_dispatches(Dispatches::one(Dispatch::SetThemeFromDescriptor(
+                                theme_descriptor,
+                            )))
                     })
                     .collect_vec(),
                 title: "Theme".to_string(),
@@ -2208,6 +2274,7 @@ impl Dispatches {
 /// Dispatch are for child component to request action from the root node
 pub(crate) enum Dispatch {
     SetTheme(crate::themes::Theme),
+    SetThemeFromDescriptor(crate::themes::theme_descriptor::ThemeDescriptor),
     CloseCurrentWindow,
     OpenFilePicker(FilePickerKind),
     OpenSearchPrompt {
@@ -2257,17 +2324,20 @@ pub(crate) enum Dispatch {
     RequestDocumentSymbols,
     GotoLocation(Location),
     OpenMoveToIndexPrompt,
-    RunCommand(String),
     QuitAll,
-    OpenCommandPrompt,
     SaveQuitAll,
     RevealInExplorer(CanonicalizedPath),
     OpenYesNoPrompt(YesNoPrompt),
     OpenMoveFilePrompt(CanonicalizedPath),
+    OpenCopyFilePrompt(CanonicalizedPath),
     OpenAddPathPrompt(CanonicalizedPath),
     DeletePath(CanonicalizedPath),
     Null,
     MoveFile {
+        from: CanonicalizedPath,
+        to: PathBuf,
+    },
+    CopyFile {
         from: CanonicalizedPath,
         to: PathBuf,
     },
@@ -2339,6 +2409,8 @@ pub(crate) enum Dispatch {
     CloseEditorInfo,
     GoToPreviousFile,
     GoToNextFile,
+    CycleBuffer(Direction),
+    JumpEditor(char),
     PushPromptHistory {
         key: PromptHistoryKey,
         line: String,
@@ -2456,13 +2528,15 @@ pub(crate) enum DispatchPrompt {
     MovePath {
         from: CanonicalizedPath,
     },
+    CopyFile {
+        from: CanonicalizedPath,
+    },
     Null,
     // TODO: remove the following variants
     // Because the following action already embeds dispatches
     SelectSymbol {
         symbols: Symbols,
     },
-    RunCommand,
     OpenFile {
         working_directory: CanonicalizedPath,
     },
@@ -2522,6 +2596,13 @@ impl DispatchPrompt {
                 }]
                 .to_vec(),
             )),
+            DispatchPrompt::CopyFile { from } => Ok(Dispatches::new(
+                [Dispatch::CopyFile {
+                    from,
+                    to: text.into(),
+                }]
+                .to_vec(),
+            )),
             DispatchPrompt::SelectSymbol { symbols } => {
                 // TODO: make Prompt generic over the item type,
                 // so that we don't have to do this,
@@ -2539,11 +2620,6 @@ impl DispatchPrompt {
                     Ok(Dispatches::new(vec![]))
                 }
             }
-            DispatchPrompt::RunCommand => Ok(Dispatches::new(
-                [Dispatch::RunCommand(text.to_string())]
-                    .into_iter()
-                    .collect(),
-            )),
             DispatchPrompt::OpenFile { working_directory } => {
                 let path = working_directory.join(text)?;
                 Ok(Dispatches::new(vec![Dispatch::OpenFile(path)]))

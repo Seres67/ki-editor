@@ -1,3 +1,19 @@
+use super::{
+    component::ComponentId,
+    dropdown::DropdownRender,
+    render_editor::Source,
+    suggestive_editor::{Decoration, Info},
+};
+use crate::{
+    app::{Dimension, Dispatch},
+    buffer::Buffer,
+    components::component::Component,
+    edit::{Action, ActionGroup, Edit, EditTransaction},
+    lsp::completion::PositionalEdit,
+    position::Position,
+    rectangle::Rectangle,
+    selection::{CharIndex, Selection, SelectionMode, SelectionSet},
+};
 use crate::{
     app::{Dispatches, RequestParams, Scope},
     buffer::Line,
@@ -9,40 +25,19 @@ use crate::{
     surround::EnclosureKind,
     transformation::{MyRegex, Transformation},
 };
-
+use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+use event::KeyEvent;
+use itertools::{Either, Itertools};
+use my_proc_macros::key;
 use nonempty::NonEmpty;
+use ropey::Rope;
 use shared::canonicalized_path::CanonicalizedPath;
 use std::{
     cell::{Ref, RefCell, RefMut},
     ops::{Not, Range},
     rc::Rc,
 };
-
-use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
-use event::KeyEvent;
-use itertools::{Either, Itertools};
-use my_proc_macros::key;
-use ropey::Rope;
-
-use crate::{
-    app::{Dimension, Dispatch},
-    buffer::Buffer,
-    components::component::Component,
-    edit::{Action, ActionGroup, Edit, EditTransaction},
-    lsp::completion::PositionalEdit,
-    position::Position,
-    rectangle::Rectangle,
-    selection::{CharIndex, Selection, SelectionMode, SelectionSet},
-};
-
 use DispatchEditor::*;
-
-use super::{
-    component::ComponentId,
-    dropdown::DropdownRender,
-    render_editor::Source,
-    suggestive_editor::{Decoration, Info},
-};
 
 #[derive(PartialEq, Clone, Debug, Eq)]
 pub(crate) enum Mode {
@@ -61,6 +56,7 @@ pub(crate) struct Jump {
     pub(crate) character: char,
     pub(crate) selection: Selection,
 }
+
 const WINDOW_TITLE_HEIGHT: usize = 1;
 
 impl Component for Editor {
@@ -91,7 +87,12 @@ impl Component for Editor {
                     .display_relative_to(current_working_directory)
                     .unwrap_or_else(|_| path.display_absolute());
                 let icon = path.icon();
-                Some(format!(" {} {}", icon, string))
+                let dirty = if self.buffer().dirty() { " [*]" } else { "" };
+                let tag = self
+                    .tag
+                    .map_or_else(String::new, |tag| format!(" #{}", tag));
+
+                Some(format!(" {} {}{}{}", icon, string, tag, dirty))
             })
             .unwrap_or_else(|| "[No title]".to_string())
     }
@@ -259,7 +260,8 @@ impl Component for Editor {
             ApplySyntaxHighlight => {
                 self.apply_syntax_highlighting(context)?;
             }
-            Save => return self.save(),
+            Save => return self.do_save(false),
+            ForceSave => return self.do_save(true),
             ReplaceCurrentSelectionWith(string) => {
                 return self.replace_current_selection_with(|_| Some(Rope::from_str(&string)))
             }
@@ -368,6 +370,7 @@ impl Clone for Editor {
             current_view_alignment: None,
             regex_highlight_rules: Vec::new(),
             copied_text_history_offset: Default::default(),
+            tag: None,
         }
     }
 }
@@ -390,6 +393,7 @@ pub(crate) struct Editor {
     id: ComponentId,
     pub(crate) current_view_alignment: Option<ViewAlignment>,
     copied_text_history_offset: Counter,
+    tag: Option<char>,
 }
 
 #[derive(Default)]
@@ -429,6 +433,7 @@ pub(crate) struct RegexHighlightRuleCaptureStyle {
     pub(crate) capture_name: &'static str,
     pub(crate) source: Source,
 }
+
 impl RegexHighlightRuleCaptureStyle {
     pub(crate) fn new(capture_name: &'static str, source: Source) -> Self {
         Self {
@@ -472,6 +477,7 @@ pub(crate) enum IfCurrentNotFound {
     LookForward,
     LookBackward,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Movement {
     Right,
@@ -538,6 +544,7 @@ impl Editor {
             current_view_alignment: None,
             regex_highlight_rules: Vec::new(),
             copied_text_history_offset: Default::default(),
+            tag: None,
         }
     }
 
@@ -555,6 +562,7 @@ impl Editor {
             current_view_alignment: None,
             regex_highlight_rules: Vec::new(),
             copied_text_history_offset: Default::default(),
+            tag: None,
         }
     }
 
@@ -1427,6 +1435,15 @@ impl Editor {
         self.buffer_mut().save_marks(selections.into())
     }
 
+    pub(crate) fn tag(&self) -> Option<char> {
+        self.tag
+    }
+
+    pub(crate) fn set_tag(&mut self, tag: Option<char>) {
+        self.tag = tag;
+        self.mode = Mode::Normal;
+    }
+
     pub(crate) fn path(&self) -> Option<CanonicalizedPath> {
         self.editor().buffer().path()
     }
@@ -2159,7 +2176,15 @@ impl Editor {
     }
 
     pub(crate) fn save(&mut self) -> anyhow::Result<Dispatches> {
-        let Some(path) = self.buffer.borrow_mut().save(self.selection_set.clone())? else {
+        self.do_save(false)
+    }
+
+    fn do_save(&mut self, force: bool) -> anyhow::Result<Dispatches> {
+        let Some(path) = self
+            .buffer
+            .borrow_mut()
+            .save(self.selection_set.clone(), force)?
+        else {
             return Ok(Default::default());
         };
 
@@ -3232,6 +3257,7 @@ pub(crate) enum DispatchEditor {
     Transform(Transformation),
     SetSelectionMode(IfCurrentNotFound, SelectionMode),
     Save,
+    ForceSave,
     FindOneChar(IfCurrentNotFound),
     MoveSelection(Movement),
     SwitchViewAlignment,

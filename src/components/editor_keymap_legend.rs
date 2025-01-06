@@ -124,6 +124,41 @@ impl Editor {
                     Dispatch::GoToPreviousFile,
                 ),
                 Keymap::new("}", "Go to next file".to_string(), Dispatch::GoToNextFile),
+                Keymap::new(
+                    "-",
+                    "Go to previous buffer".to_string(),
+                    Dispatch::CycleBuffer(Direction::Start),
+                ),
+                Keymap::new(
+                    "=",
+                    "Go to next buffer".to_string(),
+                    Dispatch::CycleBuffer(Direction::End),
+                ),
+                Keymap::new(
+                    "1",
+                    "Quick Jump - #1".to_string(),
+                    Dispatch::JumpEditor('1'),
+                ),
+                Keymap::new(
+                    "2",
+                    "Quick Jump - #2".to_string(),
+                    Dispatch::JumpEditor('2'),
+                ),
+                Keymap::new(
+                    "3",
+                    "Quick Jump - #3".to_string(),
+                    Dispatch::JumpEditor('3'),
+                ),
+                Keymap::new(
+                    "4",
+                    "Quick Jump - #4".to_string(),
+                    Dispatch::JumpEditor('4'),
+                ),
+                Keymap::new(
+                    "5",
+                    "Quick Jump - #5".to_string(),
+                    Dispatch::JumpEditor('5'),
+                ),
             ]),
         }
     }
@@ -626,11 +661,6 @@ impl Editor {
                     }),
                 ),
                 Keymap::new(
-                    ":",
-                    "Open command prompt".to_string(),
-                    Dispatch::OpenCommandPrompt,
-                ),
-                Keymap::new(
                     "esc",
                     "Remain only this window".to_string(),
                     Dispatch::RemainOnlyCurrentComponent,
@@ -926,12 +956,32 @@ impl Editor {
                                 "Tree-sitter node S-expr".to_string(),
                                 Dispatch::ToEditor(DispatchEditor::ShowCurrentTreeSitterNodeSexp),
                             ),
-                            Keymap::new(
-                                "?",
-                                "Help".to_string(),
-                                Dispatch::ToEditor(DispatchEditor::ShowKeymapLegendHelp),
-                            ),
                         ]),
+                    }))
+                    .chain(Some(KeymapLegendSection {
+                        title: "File/Quitting".to_string(),
+                        keymaps: Keymaps::new(&[
+                            Keymap::new(
+                                "enter",
+                                "Force Write".to_string(),
+                                Dispatch::ToEditor(DispatchEditor::ForceSave),
+                            ),
+                            Keymap::new("w", "Write All".to_string(), Dispatch::SaveAll),
+                            Keymap::new(
+                                "q",
+                                "Write All and Quit".to_string(),
+                                Dispatch::SaveQuitAll,
+                            ),
+                            Keymap::new("Q", "Quit WITHOUT saving".to_string(), Dispatch::QuitAll),
+                        ]),
+                    }))
+                    .chain(Some(KeymapLegendSection {
+                        title: "Help".to_string(),
+                        keymaps: Keymaps::new(&[Keymap::new(
+                            "?",
+                            "Help".to_string(),
+                            Dispatch::ToEditor(DispatchEditor::ShowKeymapLegendHelp),
+                        )]),
                     }))
                     .collect(),
             },
